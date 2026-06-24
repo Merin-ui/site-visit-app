@@ -571,12 +571,87 @@ function HistoryTab({ archived, onReopen, onDeleteArchived, onExportArchived }) 
   }
 
   // List view
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  const filtered = [...archived]
+    .sort((a, b) => new Date(b.archivedAt) - new Date(a.archivedAt))
+    .filter((v) => {
+      if (search && ![v.siteName, v.inspector, v.location].some(
+        (f) => f?.toLowerCase().includes(search.toLowerCase())
+      )) return false;
+      if (dateFrom && v.date < dateFrom) return false;
+      if (dateTo && v.date > dateTo) return false;
+      if (statusFilter !== "all") {
+        const { counts } = getVisitStats(v);
+        if (statusFilter === "fail" && counts.fail === 0) return false;
+        if (statusFilter === "flag" && counts.flag === 0) return false;
+        if (statusFilter === "pass" && (counts.fail > 0 || counts.flag > 0)) return false;
+      }
+      return true;
+    });
+
   return (
     <div>
-      <div style={{ fontSize:13, color:"#6b7280", marginBottom:16 }}>
-        {archived.length} archived visit{archived.length!==1?"s":""}. Click any to view full details.
+      {/* Filter bar */}
+      <div style={{ ...S.card, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 12 }}>🔍 Filter Visits</div>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
+          <div>
+            <label style={S.label}>Search site, inspector, location</label>
+            <input style={S.input} placeholder="Type to search…" value={search}
+              onChange={(e) => setSearch(e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Date from</label>
+            <input style={S.input} type="date" value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Date to</label>
+            <input style={S.input} type="date" value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)} />
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "#6b7280" }}>Status:</span>
+          {[
+            { id: "all", label: "All" },
+            { id: "pass", label: "✓ All Pass" },
+            { id: "flag", label: "⚑ Has Flags" },
+            { id: "fail", label: "✗ Has Fails" },
+          ].map((opt) => (
+            <button key={opt.id} onClick={() => setStatusFilter(opt.id)}
+              style={{ border: `1.5px solid ${statusFilter === opt.id ? "#0ea5e9" : "#d1d5db"}`,
+                borderRadius: 6, padding: "4px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                background: statusFilter === opt.id ? "#eff6ff" : "#fff",
+                color: statusFilter === opt.id ? "#0ea5e9" : "#6b7280" }}>
+              {opt.label}
+            </button>
+          ))}
+          {(search || dateFrom || dateTo || statusFilter !== "all") && (
+            <button onClick={() => { setSearch(""); setDateFrom(""); setDateTo(""); setStatusFilter("all"); }}
+              style={{ border: "1px solid #fee2e2", borderRadius: 6, padding: "4px 12px", fontSize: 12,
+                fontWeight: 600, cursor: "pointer", background: "#fff5f5", color: "#dc2626", marginLeft: "auto" }}>
+              ✕ Clear filters
+            </button>
+          )}
+        </div>
       </div>
-      {[...archived].sort((a,b) => new Date(b.archivedAt)-new Date(a.archivedAt)).map((v) => {
+
+      <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 12 }}>
+        {filtered.length} of {archived.length} visit{archived.length !== 1 ? "s" : ""} shown
+      </div>
+
+      {filtered.length === 0 && (
+        <div style={{ ...S.card, textAlign: "center", padding: "40px 20px", color: "#9ca3af", fontSize: 14 }}>
+          No visits match your filters.
+        </div>
+      )}
+
+      {filtered.map((v) => {
         const { counts, progress } = getVisitStats(v);
         const hasFails = counts.fail > 0;
         return (
@@ -603,7 +678,6 @@ function HistoryTab({ archived, onReopen, onDeleteArchived, onExportArchived }) 
                 <span style={{ fontSize:12, color:"#9ca3af" }}>→</span>
               </div>
             </div>
-            {/* Mini progress bar */}
             <div style={{ height:4, background:"#e5e7eb", borderRadius:99, overflow:"hidden", marginTop:12 }}>
               <div style={{ height:"100%", width:`${progress}%`,
                 background:hasFails?"#dc2626":counts.flag>0?"#d97706":"#16a34a", borderRadius:99 }} />
