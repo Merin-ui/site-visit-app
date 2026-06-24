@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 
 const BIN_ID = "6a3b85fcf5f4af5e2927780e";
-const API_KEY = "$2a$10$iWwRndnpQH.pN8C/CsNC6.EzI.qo/XZXzdU0QgFupXtBBuO5VaqrK";
+const API_KEY = "$2a$10$pktgtUci53s8FHLnqQrrxuBETuQr6u6.dOGEL1oeVvbGBl4hIjnf6";
 const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
 
 async function loadFromBin() {
