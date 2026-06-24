@@ -1,4 +1,22 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
+
+const BIN_ID = "6a3b85fcf5f4af5e2927780e";
+const API_KEY = "$2a$10$iWwRndnpQH.pN8C/CsNC6.EzI.qo/XZXzdU0QgFupXtBBuO5VaqrK";
+const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
+
+async function loadFromBin() {
+  const res = await fetch(BIN_URL, { headers: { "X-Master-Key": API_KEY } });
+  const data = await res.json();
+  return data.record || { visits: [], archived: [] };
+}
+
+async function saveToBin(payload) {
+  await fetch(BIN_URL, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Master-Key": API_KEY },
+    body: JSON.stringify(payload),
+  });
+}
 
 const DEFAULT_CHECKPOINTS = [
   { id: "cp1", category: "Safety", items: [
@@ -44,7 +62,17 @@ function makeVisit() {
     id: Date.now(),
     siteName: "", inspector: "", date: new Date().toISOString().split("T")[0],
     location: "", weather: "", checkResults: {}, observations: [],
+    createdAt: new Date().toISOString(),
   };
+}
+
+function getVisitStats(visit) {
+  const allItems = DEFAULT_CHECKPOINTS.flatMap((c) => c.items);
+  const counts = { pass: 0, fail: 0, flag: 0, na: 0 };
+  allItems.forEach((i) => { const s = visit.checkResults?.[i.id]?.status; if (s) counts[s]++; });
+  const checked = counts.pass + counts.fail + counts.flag + counts.na;
+  const progress = Math.round((checked / allItems.length) * 100);
+  return { counts, checked, total: allItems.length, progress };
 }
 
 function exportToCSV(visit) {
@@ -67,17 +95,15 @@ function exportToCSV(visit) {
   rows.push([]);
   rows.push(["── OBSERVATIONS ──"]);
   rows.push(["Time", "Type", "Priority", "Description", "Location"]);
-  visit.observations.forEach((o) =>
+  (visit.observations || []).forEach((o) =>
     rows.push([o.time, o.type, o.priority, o.description, o.location || ""])
   );
-  const allStatuses = DEFAULT_CHECKPOINTS.flatMap((c) => c.items.map((i) => visit.checkResults?.[i.id]?.status));
-  const counts = { pass: 0, fail: 0, flag: 0, na: 0, unchecked: 0 };
-  allStatuses.forEach((s) => { if (s) counts[s]++; else counts.unchecked++; });
+  const { counts, total } = getVisitStats(visit);
   rows.push([]);
   rows.push(["── SUMMARY ──"]);
-  rows.push(["Total", allStatuses.length], ["Pass", counts.pass], ["Fail", counts.fail],
-    ["Flagged", counts.flag], ["N/A", counts.na], ["Unchecked", counts.unchecked],
-    ["Observations", visit.observations.length]);
+  rows.push(["Total", total], ["Pass", counts.pass], ["Fail", counts.fail],
+    ["Flagged", counts.flag], ["N/A", counts.na],
+    ["Observations", (visit.observations||[]).length]);
   const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -88,7 +114,7 @@ function exportToCSV(visit) {
   URL.revokeObjectURL(url);
 }
 
-// ── Shared primitive components (stable, defined outside) ──────────────────
+// ── Shared primitives ──────────────────────────────────────────────────────
 
 function Badge({ status }) {
   const cfg = STATUS_CONFIG[status];
@@ -111,7 +137,19 @@ function StatCard({ label, value, color }) {
   );
 }
 
-// ── Overview Tab ───────────────────────────────────────────────────────────
+function useStyles() {
+  return {
+    card: { background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 20, marginBottom: 16 },
+    sectionTitle: { fontSize: 14, fontWeight: 700, color: "#374151", marginBottom: 14 },
+    input: { border: "1px solid #d1d5db", borderRadius: 7, padding: "8px 12px", fontSize: 13,
+      color: "#111827", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", background: "#fff" },
+    label: { fontSize: 12, fontWeight: 600, color: "#6b7280", marginBottom: 4, display: "block" },
+    grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+    grid3: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 },
+  };
+}
+
+// ── Tab components ─────────────────────────────────────────────────────────
 
 function OverviewTab({ visit, onUpdateVisit, counts, checked, total, progress }) {
   const S = useStyles();
@@ -119,7 +157,6 @@ function OverviewTab({ visit, onUpdateVisit, counts, checked, total, progress })
     c.items.filter((i) => ["fail", "flag"].includes(visit.checkResults[i.id]?.status))
       .map((i) => ({ cat: c.category, item: i, result: visit.checkResults[i.id] }))
   );
-
   return (
     <div>
       <div style={S.card}>
@@ -144,7 +181,6 @@ function OverviewTab({ visit, onUpdateVisit, counts, checked, total, progress })
           </div>
         </div>
       </div>
-
       <div style={S.card}>
         <div style={S.sectionTitle}>Inspection Progress</div>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#6b7280", marginBottom: 6 }}>
@@ -159,10 +195,9 @@ function OverviewTab({ visit, onUpdateVisit, counts, checked, total, progress })
           <StatCard label="FAIL" value={counts.fail} color="#dc2626" />
           <StatCard label="FLAGGED" value={counts.flag} color="#d97706" />
           <StatCard label="N/A" value={counts.na} color="#6b7280" />
-          <StatCard label="OBSERVATIONS" value={visit.observations.length} color="#0ea5e9" />
+          <StatCard label="OBSERVATIONS" value={(visit.observations||[]).length} color="#0ea5e9" />
         </div>
       </div>
-
       {attentionItems.length > 0 && (
         <div style={{ ...S.card, borderLeft: "4px solid #dc2626" }}>
           <div style={S.sectionTitle}>⚠ Items Needing Attention</div>
@@ -179,27 +214,21 @@ function OverviewTab({ visit, onUpdateVisit, counts, checked, total, progress })
   );
 }
 
-// ── Checkpoints Tab ────────────────────────────────────────────────────────
-
 function CheckpointsTab({ visit, onSetResult, onSetNote }) {
   const S = useStyles();
   const [expandedCp, setExpandedCp] = useState(null);
   const [cpNoteOpen, setCpNoteOpen] = useState(null);
-
   return (
     <div>
       {DEFAULT_CHECKPOINTS.map((cat) => {
         const catCounts = { pass: 0, fail: 0, flag: 0 };
-        cat.items.forEach((i) => { const s = visit.checkResults[i.id]?.status; if (s && s !== "na") catCounts[s] = (catCounts[s] || 0) + 1; });
-        const isOpen = expandedCp === cat.id || expandedCp === null;
-
+        cat.items.forEach((i) => { const s = visit.checkResults[i.id]?.status; if (s && s !== "na") catCounts[s] = (catCounts[s]||0)+1; });
         return (
           <div key={cat.id} style={{ ...S.card, padding: 0, overflow: "hidden" }}>
             <div onClick={() => setExpandedCp(expandedCp === cat.id ? null : cat.id)}
-              style={{ padding: "14px 20px", display: "flex", alignItems: "center",
-                justifyContent: "space-between", cursor: "pointer",
-                background: expandedCp === cat.id ? "#f8fafc" : "#fff",
-                borderBottom: isOpen ? "1px solid #e5e7eb" : "none" }}>
+              style={{ padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between",
+                cursor: "pointer", background: expandedCp === cat.id ? "#f8fafc" : "#fff",
+                borderBottom: (expandedCp === cat.id || expandedCp === null) ? "1px solid #e5e7eb" : "none" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span style={{ fontSize: 14, fontWeight: 700 }}>{cat.category}</span>
                 <span style={{ fontSize: 12, color: "#9ca3af" }}>{cat.items.length} items</span>
@@ -211,33 +240,28 @@ function CheckpointsTab({ visit, onSetResult, onSetNote }) {
                 <span style={{ color: "#9ca3af", marginLeft: 4 }}>{expandedCp === cat.id ? "▲" : "▼"}</span>
               </div>
             </div>
-
             {(expandedCp === cat.id || expandedCp === null) && cat.items.map((item, idx) => {
               const result = visit.checkResults[item.id] || {};
               const noteOpen = cpNoteOpen === item.id;
               return (
-                <div key={item.id} style={{
-                  padding: "14px 20px",
+                <div key={item.id} style={{ padding: "14px 20px",
                   borderBottom: idx < cat.items.length - 1 ? "1px solid #f3f4f6" : "none",
-                  background: result.status === "fail" ? "#fff5f5" : result.status === "flag" ? "#fffbeb" : "#fff",
-                }}>
+                  background: result.status === "fail" ? "#fff5f5" : result.status === "flag" ? "#fffbeb" : "#fff" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13, color: "#374151", flex: 1 }}>{item.label}</span>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       {Object.keys(STATUS_CONFIG).map((s) => (
                         <button key={s} onClick={() => onSetResult(item.id, result.status === s ? null : s)}
-                          style={{
-                            border: `1.5px solid ${result.status === s ? STATUS_CONFIG[s].color : "#d1d5db"}`,
+                          style={{ border: `1.5px solid ${result.status === s ? STATUS_CONFIG[s].color : "#d1d5db"}`,
                             borderRadius: 6, padding: "4px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer",
                             background: result.status === s ? STATUS_CONFIG[s].bg : "#fff",
-                            color: result.status === s ? STATUS_CONFIG[s].color : "#6b7280",
-                          }}>
+                            color: result.status === s ? STATUS_CONFIG[s].color : "#6b7280" }}>
                           {STATUS_CONFIG[s].label}
                         </button>
                       ))}
                       <button onClick={() => setCpNoteOpen(noteOpen ? null : item.id)}
-                        style={{ border: "1px solid #d1d5db", borderRadius: 6, padding: "4px 10px",
-                          fontSize: 12, cursor: "pointer", background: noteOpen ? "#eff6ff" : "#fff",
+                        style={{ border: "1px solid #d1d5db", borderRadius: 6, padding: "4px 10px", fontSize: 12,
+                          cursor: "pointer", background: noteOpen ? "#eff6ff" : "#fff",
                           color: noteOpen ? "#1d4ed8" : "#6b7280" }}>
                         {result.note ? "✏ Note" : "+ Note"}
                       </button>
@@ -245,8 +269,7 @@ function CheckpointsTab({ visit, onSetResult, onSetNote }) {
                   </div>
                   {noteOpen && (
                     <input autoFocus style={{ ...S.input, fontSize: 12, marginTop: 10 }}
-                      placeholder="Add a note for this checkpoint…"
-                      value={result.note || ""}
+                      placeholder="Add a note…" value={result.note || ""}
                       onChange={(e) => onSetNote(item.id, e.target.value)} />
                   )}
                   {result.note && !noteOpen && (
@@ -262,21 +285,17 @@ function CheckpointsTab({ visit, onSetResult, onSetNote }) {
   );
 }
 
-// ── Observations Tab ───────────────────────────────────────────────────────
-
 function ObservationsTab({ visit, onAddObs, onRemoveObs }) {
   const S = useStyles();
   const [form, setForm] = useState({
     type: "general", priority: "medium", description: "", location: "",
     time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
   });
-
   const handleAdd = () => {
     if (!form.description.trim()) return;
     onAddObs({ ...form, id: Date.now() });
     setForm((f) => ({ ...f, description: "", location: "" }));
   };
-
   return (
     <div>
       <div style={S.card}>
@@ -286,7 +305,7 @@ function ObservationsTab({ visit, onAddObs, onRemoveObs }) {
             <label style={S.label}>Type</label>
             <select style={S.input} value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}>
               {["general","defect","hazard","progress","material","personnel","equipment"].map((t) => (
-                <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
+                <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>
               ))}
             </select>
           </div>
@@ -315,24 +334,23 @@ function ObservationsTab({ visit, onAddObs, onRemoveObs }) {
             onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
         </div>
         <div style={{ marginTop: 12, textAlign: "right" }}>
-          <button style={{ border: "1px solid #0284c7", borderRadius: 7, padding: "8px 16px",
-            fontSize: 13, fontWeight: 600, cursor: "pointer", background: "#0ea5e9", color: "#fff" }}
-            onClick={handleAdd}>+ Add Observation</button>
+          <button onClick={handleAdd} style={{ border: "1px solid #0284c7", borderRadius: 7, padding: "8px 16px",
+            fontSize: 13, fontWeight: 600, cursor: "pointer", background: "#0ea5e9", color: "#fff" }}>
+            + Add Observation
+          </button>
         </div>
       </div>
-
-      {visit.observations.length === 0
+      {(visit.observations||[]).length === 0
         ? <div style={{ textAlign: "center", color: "#9ca3af", padding: "40px 0", fontSize: 14 }}>No observations logged yet.</div>
-        : visit.observations.map((o) => (
-          <div key={o.id} style={{ ...S.card, borderLeft: `4px solid ${TYPE_COLORS[o.type] || "#6b7280"}`, marginBottom: 10 }}>
+        : (visit.observations||[]).map((o) => (
+          <div key={o.id} style={{ ...S.card, borderLeft: `4px solid ${TYPE_COLORS[o.type]||"#6b7280"}`, marginBottom: 10 }}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                   <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase",
                     color: TYPE_COLORS[o.type], letterSpacing: "0.06em" }}>{o.type}</span>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                    background: { high: "#dc2626", medium: "#d97706", low: "#16a34a" }[o.priority],
-                    display: "inline-block" }} />
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0, display: "inline-block",
+                    background: { high:"#dc2626", medium:"#d97706", low:"#16a34a" }[o.priority] }} />
                   <span style={{ fontSize: 11, color: "#9ca3af" }}>{o.priority} · {o.time}</span>
                 </div>
                 <div style={{ fontSize: 14, color: "#111827", marginBottom: 4 }}>{o.description}</div>
@@ -348,8 +366,6 @@ function ObservationsTab({ visit, onAddObs, onRemoveObs }) {
   );
 }
 
-// ── Export Tab ─────────────────────────────────────────────────────────────
-
 function ExportTab({ visit, counts, checked, total }) {
   const S = useStyles();
   const unchecked = total - checked;
@@ -362,46 +378,44 @@ function ExportTab({ visit, counts, checked, total }) {
         </div>
         <div style={{ background: "#f8fafc", borderRadius: 8, padding: 16, marginBottom: 16 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
-            {[["Site", visit.siteName||"—"],["Inspector",visit.inspector||"—"],["Date",visit.date||"—"],
+            {[["Site",visit.siteName||"—"],["Inspector",visit.inspector||"—"],["Date",visit.date||"—"],
               ["Location",visit.location||"—"],["Checkpoints",`${checked}/${total}`],
               ["Pass/Fail/Flag",`${counts.pass}/${counts.fail}/${counts.flag}`],
-              ["Observations",visit.observations.length],["Unchecked",unchecked]
+              ["Observations",(visit.observations||[]).length],["Unchecked",unchecked]
             ].map(([k,v]) => (
-              <div key={k} style={{ display: "flex", justifyContent: "space-between", fontSize: 13,
-                borderBottom: "1px solid #e5e7eb", padding: "6px 0" }}>
-                <span style={{ color: "#6b7280" }}>{k}</span>
-                <span style={{ fontWeight: 600 }}>{v}</span>
+              <div key={k} style={{ display:"flex", justifyContent:"space-between", fontSize:13,
+                borderBottom:"1px solid #e5e7eb", padding:"6px 0" }}>
+                <span style={{ color:"#6b7280" }}>{k}</span>
+                <span style={{ fontWeight:600 }}>{v}</span>
               </div>
             ))}
           </div>
         </div>
         {unchecked > 0 && (
-          <div style={{ background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 7,
-            padding: "10px 14px", fontSize: 13, color: "#92400e", marginBottom: 14 }}>
-            ⚠ {unchecked} checkpoint{unchecked !== 1 ? "s" : ""} still unchecked.
+          <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:7,
+            padding:"10px 14px", fontSize:13, color:"#92400e", marginBottom:14 }}>
+            ⚠ {unchecked} checkpoint{unchecked!==1?"s":""} still unchecked.
           </div>
         )}
         <button onClick={() => exportToCSV(visit)}
-          style={{ border: "1px solid #0f172a", borderRadius: 7, padding: "12px 24px",
-            fontSize: 14, fontWeight: 600, cursor: "pointer", background: "#0f172a",
-            color: "#fff", width: "100%" }}>
+          style={{ border:"1px solid #0f172a", borderRadius:7, padding:"12px 24px",
+            fontSize:14, fontWeight:600, cursor:"pointer", background:"#0f172a", color:"#fff", width:"100%" }}>
           ⬇ Export to Excel (.csv)
         </button>
       </div>
-
       <div style={S.card}>
         <div style={S.sectionTitle}>Checklist Preview</div>
         {DEFAULT_CHECKPOINTS.map((cat) => (
           <div key={cat.id} style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, fontWeight: 800, color: "#374151", letterSpacing: "0.06em",
-              textTransform: "uppercase", marginBottom: 8 }}>{cat.category}</div>
+            <div style={{ fontSize:12, fontWeight:800, color:"#374151", letterSpacing:"0.06em",
+              textTransform:"uppercase", marginBottom:8 }}>{cat.category}</div>
             {cat.items.map((item) => {
               const r = visit.checkResults[item.id];
               return (
-                <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                  {r?.status ? <Badge status={r.status} /> : <span style={{ fontSize: 11, color: "#9ca3af" }}>—</span>}
-                  <span style={{ fontSize: 13, color: r?.status ? "#111827" : "#9ca3af" }}>{item.label}</span>
-                  {r?.note && <span style={{ fontSize: 12, color: "#9ca3af", fontStyle: "italic" }}>— {r.note}</span>}
+                <div key={item.id} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+                  {r?.status ? <Badge status={r.status}/> : <span style={{ fontSize:11, color:"#9ca3af" }}>—</span>}
+                  <span style={{ fontSize:13, color:r?.status?"#111827":"#9ca3af" }}>{item.label}</span>
+                  {r?.note && <span style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>— {r.note}</span>}
                 </div>
               );
             })}
@@ -412,50 +426,229 @@ function ExportTab({ visit, counts, checked, total }) {
   );
 }
 
-// ── Shared styles hook ─────────────────────────────────────────────────────
+// ── History Tab ────────────────────────────────────────────────────────────
 
-function useStyles() {
-  return {
-    card: { background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 20, marginBottom: 16 },
-    sectionTitle: { fontSize: 14, fontWeight: 700, color: "#374151", marginBottom: 14, letterSpacing: "0.01em" },
-    input: { border: "1px solid #d1d5db", borderRadius: 7, padding: "8px 12px", fontSize: 13,
-      color: "#111827", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", background: "#fff" },
-    label: { fontSize: 12, fontWeight: 600, color: "#6b7280", marginBottom: 4, display: "block" },
-    grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
-    grid3: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 },
-  };
+function HistoryTab({ archived, onReopen, onDeleteArchived, onExportArchived }) {
+  const S = useStyles();
+  const [selected, setSelected] = useState(null);
+
+  if (archived.length === 0) {
+    return (
+      <div style={{ ...S.card, textAlign: "center", padding: "60px 20px" }}>
+        <div style={{ fontSize: 32, marginBottom: 12 }}>🗂</div>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#374151", marginBottom: 6 }}>No archived visits yet</div>
+        <div style={{ fontSize: 13, color: "#9ca3af" }}>
+          When you're done with a visit, click <strong>"Archive Visit"</strong> in the visit switcher.<br/>
+          It'll be saved here permanently and removed from active visits.
+        </div>
+      </div>
+    );
+  }
+
+  if (selected) {
+    const v = archived.find((a) => a.id === selected);
+    if (!v) { setSelected(null); return null; }
+    const { counts, checked, total, progress } = getVisitStats(v);
+    const attentionItems = DEFAULT_CHECKPOINTS.flatMap((c) =>
+      c.items.filter((i) => ["fail","flag"].includes(v.checkResults?.[i.id]?.status))
+        .map((i) => ({ cat: c.category, item: i, result: v.checkResults[i.id] }))
+    );
+    return (
+      <div>
+        <button onClick={() => setSelected(null)} style={{ border:"1px solid #e5e7eb", borderRadius:7,
+          padding:"7px 14px", fontSize:13, fontWeight:600, cursor:"pointer", background:"#fff",
+          color:"#374151", marginBottom:16, display:"flex", alignItems:"center", gap:6 }}>
+          ← Back to History
+        </button>
+
+        {/* Visit header */}
+        <div style={{ ...S.card, borderTop: "4px solid #0ea5e9" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:12 }}>
+            <div>
+              <div style={{ fontSize:18, fontWeight:800, color:"#111827" }}>{v.siteName || "Unnamed Visit"}</div>
+              <div style={{ fontSize:13, color:"#6b7280", marginTop:4 }}>
+                {v.date} {v.inspector && `· Inspector: ${v.inspector}`} {v.location && `· ${v.location}`}
+              </div>
+              {v.weather && <div style={{ fontSize:12, color:"#9ca3af", marginTop:2 }}>🌤 {v.weather}</div>}
+              <div style={{ fontSize:11, color:"#9ca3af", marginTop:4 }}>
+                Archived {new Date(v.archivedAt).toLocaleString()}
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+              <button onClick={() => { exportToCSV(v); }} style={{ border:"1px solid #0f172a", borderRadius:7,
+                padding:"8px 14px", fontSize:13, fontWeight:600, cursor:"pointer", background:"#0f172a", color:"#fff" }}>
+                ⬇ Export CSV
+              </button>
+              <button onClick={() => onReopen(v.id)} style={{ border:"1px solid #0ea5e9", borderRadius:7,
+                padding:"8px 14px", fontSize:13, fontWeight:600, cursor:"pointer", background:"#eff6ff", color:"#0ea5e9" }}>
+                ↩ Reopen
+              </button>
+              <button onClick={() => { onDeleteArchived(v.id); setSelected(null); }}
+                style={{ border:"1px solid #fee2e2", borderRadius:7, padding:"8px 14px",
+                  fontSize:13, fontWeight:600, cursor:"pointer", background:"#fff5f5", color:"#dc2626" }}>
+                🗑 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div style={S.card}>
+          <div style={S.sectionTitle}>Results Summary</div>
+          <div style={{ marginBottom:12 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:"#6b7280", marginBottom:6 }}>
+              <span>{checked} of {total} checkpoints reviewed</span>
+              <span style={{ fontWeight:700, color:"#0ea5e9" }}>{progress}%</span>
+            </div>
+            <div style={{ height:8, background:"#e5e7eb", borderRadius:99, overflow:"hidden" }}>
+              <div style={{ height:"100%", width:`${progress}%`, background:"linear-gradient(90deg,#0ea5e9,#38bdf8)", borderRadius:99 }} />
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+            <StatCard label="PASS" value={counts.pass} color="#16a34a" />
+            <StatCard label="FAIL" value={counts.fail} color="#dc2626" />
+            <StatCard label="FLAGGED" value={counts.flag} color="#d97706" />
+            <StatCard label="N/A" value={counts.na} color="#6b7280" />
+            <StatCard label="OBSERVATIONS" value={(v.observations||[]).length} color="#0ea5e9" />
+          </div>
+        </div>
+
+        {/* Attention items */}
+        {attentionItems.length > 0 && (
+          <div style={{ ...S.card, borderLeft:"4px solid #dc2626" }}>
+            <div style={S.sectionTitle}>⚠ Failed / Flagged Items</div>
+            {attentionItems.map(({ cat, item, result }) => (
+              <div key={item.id} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+                <Badge status={result.status} />
+                <span style={{ fontSize:13, color:"#374151" }}>{cat} — {item.label}</span>
+                {result.note && <span style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>{result.note}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Full checklist */}
+        <div style={S.card}>
+          <div style={S.sectionTitle}>Full Checklist</div>
+          {DEFAULT_CHECKPOINTS.map((cat) => (
+            <div key={cat.id} style={{ marginBottom:16 }}>
+              <div style={{ fontSize:12, fontWeight:800, color:"#374151", letterSpacing:"0.06em",
+                textTransform:"uppercase", marginBottom:8 }}>{cat.category}</div>
+              {cat.items.map((item) => {
+                const r = v.checkResults?.[item.id];
+                return (
+                  <div key={item.id} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+                    {r?.status ? <Badge status={r.status}/> : <span style={{ fontSize:11, color:"#9ca3af" }}>—</span>}
+                    <span style={{ fontSize:13, color:r?.status?"#111827":"#9ca3af" }}>{item.label}</span>
+                    {r?.note && <span style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>— {r.note}</span>}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+
+        {/* Observations */}
+        {(v.observations||[]).length > 0 && (
+          <div style={S.card}>
+            <div style={S.sectionTitle}>Observations ({v.observations.length})</div>
+            {v.observations.map((o) => (
+              <div key={o.id} style={{ borderLeft:`4px solid ${TYPE_COLORS[o.type]||"#6b7280"}`,
+                padding:"12px 16px", marginBottom:10, background:"#f8fafc", borderRadius:"0 8px 8px 0" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                  <span style={{ fontSize:11, fontWeight:700, textTransform:"uppercase",
+                    color:TYPE_COLORS[o.type], letterSpacing:"0.06em" }}>{o.type}</span>
+                  <span style={{ fontSize:11, color:"#9ca3af" }}>{o.priority} · {o.time}</span>
+                </div>
+                <div style={{ fontSize:13, color:"#111827" }}>{o.description}</div>
+                {o.location && <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>📍 {o.location}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // List view
+  return (
+    <div>
+      <div style={{ fontSize:13, color:"#6b7280", marginBottom:16 }}>
+        {archived.length} archived visit{archived.length!==1?"s":""}. Click any to view full details.
+      </div>
+      {[...archived].sort((a,b) => new Date(b.archivedAt)-new Date(a.archivedAt)).map((v) => {
+        const { counts, progress } = getVisitStats(v);
+        const hasFails = counts.fail > 0;
+        return (
+          <div key={v.id} onClick={() => setSelected(v.id)}
+            style={{ ...S.card, cursor:"pointer", borderLeft:`4px solid ${hasFails?"#dc2626":counts.flag>0?"#d97706":"#16a34a"}`,
+              transition:"box-shadow 0.15s" }}
+            onMouseEnter={(e) => e.currentTarget.style.boxShadow="0 4px 12px rgba(0,0,0,0.08)"}
+            onMouseLeave={(e) => e.currentTarget.style.boxShadow="none"}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:8 }}>
+              <div>
+                <div style={{ fontSize:15, fontWeight:700, color:"#111827" }}>{v.siteName||"Unnamed Visit"}</div>
+                <div style={{ fontSize:12, color:"#6b7280", marginTop:3 }}>
+                  {v.date} {v.inspector && `· ${v.inspector}`} {v.location && `· ${v.location}`}
+                </div>
+                <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>
+                  Archived {new Date(v.archivedAt).toLocaleDateString()}
+                </div>
+              </div>
+              <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+                {counts.fail > 0 && <Badge status="fail"/>}
+                {counts.flag > 0 && <Badge status="flag"/>}
+                {counts.pass > 0 && <Badge status="pass"/>}
+                <span style={{ fontSize:12, fontWeight:700, color:"#0ea5e9", marginLeft:4 }}>{progress}%</span>
+                <span style={{ fontSize:12, color:"#9ca3af" }}>→</span>
+              </div>
+            </div>
+            {/* Mini progress bar */}
+            <div style={{ height:4, background:"#e5e7eb", borderRadius:99, overflow:"hidden", marginTop:12 }}>
+              <div style={{ height:"100%", width:`${progress}%`,
+                background:hasFails?"#dc2626":counts.flag>0?"#d97706":"#16a34a", borderRadius:99 }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 // ── Visit Switcher ─────────────────────────────────────────────────────────
 
-function VisitSwitcher({ visits, activeId, onSelect, onNew, onDelete }) {
+function VisitSwitcher({ visits, activeId, onSelect, onNew, onDelete, onArchive }) {
   return (
-    <div style={{ background: "#1e293b", padding: "8px 24px", display: "flex", alignItems: "center", gap: 8, overflowX: "auto" }}>
-      <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>VISITS</span>
+    <div style={{ background:"#1e293b", padding:"8px 24px", display:"flex", alignItems:"center", gap:8, overflowX:"auto" }}>
+      <span style={{ fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:"0.06em", whiteSpace:"nowrap" }}>ACTIVE</span>
       {visits.map((v) => (
-        <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 0 }}>
+        <div key={v.id} style={{ display:"flex", alignItems:"center" }}>
           <button onClick={() => onSelect(v.id)} style={{
-            background: v.id === activeId ? "#0ea5e9" : "#334155",
-            color: v.id === activeId ? "#fff" : "#94a3b8",
-            border: "none", borderRadius: visits.length > 1 ? "6px 0 0 6px" : 6,
-            padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
-          }}>
-            {v.siteName || `Visit ${visits.indexOf(v) + 1}`}
+            background: v.id===activeId?"#0ea5e9":"#334155",
+            color: v.id===activeId?"#fff":"#94a3b8",
+            border:"none", borderRadius: visits.length>1?"6px 0 0 6px":6,
+            padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
+            {v.siteName||`Visit ${visits.indexOf(v)+1}`}
           </button>
           {visits.length > 1 && (
             <button onClick={() => onDelete(v.id)} style={{
-              background: v.id === activeId ? "#0284c7" : "#1e3a5f",
-              color: v.id === activeId ? "#fff" : "#64748b",
-              border: "none", borderRadius: "0 6px 6px 0", padding: "5px 7px",
-              fontSize: 11, cursor: "pointer",
-            }}>✕</button>
+              background: v.id===activeId?"#0284c7":"#1e3a5f",
+              color: v.id===activeId?"#fff":"#64748b",
+              border:"none", borderRadius:"0 6px 6px 0", padding:"5px 7px", fontSize:11, cursor:"pointer" }}>✕</button>
           )}
         </div>
       ))}
-      <button onClick={onNew} style={{
-        background: "none", border: "1px dashed #475569", borderRadius: 6,
-        color: "#94a3b8", padding: "4px 12px", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap",
-      }}>+ New Visit</button>
+      <button onClick={onNew} style={{ background:"none", border:"1px dashed #475569", borderRadius:6,
+        color:"#94a3b8", padding:"4px 12px", fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>
+        + New Visit
+      </button>
+      {activeId && (
+        <button onClick={() => onArchive(activeId)} style={{ background:"none", border:"1px solid #475569",
+          borderRadius:6, color:"#94a3b8", padding:"4px 12px", fontSize:12, cursor:"pointer", whiteSpace:"nowrap",
+          marginLeft:"auto" }}>
+          🗂 Archive Visit
+        </button>
+      )}
     </div>
   );
 }
@@ -464,115 +657,162 @@ function VisitSwitcher({ visits, activeId, onSelect, onNew, onDelete }) {
 
 export default function App() {
   const [visits, setVisits] = useState([makeVisit()]);
+  const [archived, setArchived] = useState([]);
   const [activeId, setActiveId] = useState(visits[0].id);
   const [tab, setTab] = useState("overview");
+  const [syncStatus, setSyncStatus] = useState("loading");
+  const saveTimer = useRef(null);
+
+  useEffect(() => {
+    loadFromBin()
+      .then((record) => {
+        const v = record.visits?.length ? record.visits : [makeVisit()];
+        const a = record.archived || [];
+        setVisits(v);
+        setArchived(a);
+        setActiveId(v[0].id);
+        setSyncStatus("idle");
+      })
+      .catch(() => setSyncStatus("error"));
+  }, []);
+
+  const triggerSave = useCallback((newVisits, newArchived) => {
+    setSyncStatus("saving");
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveToBin({ visits: newVisits, archived: newArchived })
+        .then(() => setSyncStatus("saved"))
+        .catch(() => setSyncStatus("error"));
+    }, 1200);
+  }, []);
 
   const visit = visits.find((v) => v.id === activeId) || visits[0];
 
   const updateVisit = useCallback((updater) => {
-    setVisits((vs) => vs.map((v) => v.id === activeId ? (typeof updater === "function" ? updater(v) : { ...v, ...updater }) : v));
-  }, [activeId]);
+    setVisits((vs) => {
+      const next = vs.map((v) => v.id === activeId ? (typeof updater === "function" ? updater(v) : { ...v, ...updater }) : v);
+      setArchived((a) => { triggerSave(next, a); return a; });
+      return next;
+    });
+  }, [activeId, triggerSave]);
 
-  const handleUpdateField = useCallback((key, value) => {
-    updateVisit((v) => ({ ...v, [key]: value }));
-  }, [updateVisit]);
-
-  const handleSetResult = useCallback((itemId, status) => {
-    updateVisit((v) => ({ ...v, checkResults: { ...v.checkResults, [itemId]: { ...v.checkResults[itemId], status } } }));
-  }, [updateVisit]);
-
-  const handleSetNote = useCallback((itemId, note) => {
-    updateVisit((v) => ({ ...v, checkResults: { ...v.checkResults, [itemId]: { ...v.checkResults[itemId], note } } }));
-  }, [updateVisit]);
-
-  const handleAddObs = useCallback((obs) => {
-    updateVisit((v) => ({ ...v, observations: [obs, ...v.observations] }));
-  }, [updateVisit]);
-
-  const handleRemoveObs = useCallback((id) => {
-    updateVisit((v) => ({ ...v, observations: v.observations.filter((o) => o.id !== id) }));
-  }, [updateVisit]);
+  const handleUpdateField = useCallback((key, value) => updateVisit((v) => ({ ...v, [key]: value })), [updateVisit]);
+  const handleSetResult = useCallback((itemId, status) => updateVisit((v) => ({ ...v, checkResults: { ...v.checkResults, [itemId]: { ...v.checkResults[itemId], status } } })), [updateVisit]);
+  const handleSetNote = useCallback((itemId, note) => updateVisit((v) => ({ ...v, checkResults: { ...v.checkResults, [itemId]: { ...v.checkResults[itemId], note } } })), [updateVisit]);
+  const handleAddObs = useCallback((obs) => updateVisit((v) => ({ ...v, observations: [obs, ...(v.observations||[])] })), [updateVisit]);
+  const handleRemoveObs = useCallback((id) => updateVisit((v) => ({ ...v, observations: (v.observations||[]).filter((o) => o.id !== id) })), [updateVisit]);
 
   const handleNewVisit = () => {
     const nv = makeVisit();
-    setVisits((vs) => [...vs, nv]);
+    setVisits((vs) => { const next = [...vs, nv]; setArchived((a) => { triggerSave(next, a); return a; }); return next; });
     setActiveId(nv.id);
     setTab("overview");
   };
 
   const handleDeleteVisit = (id) => {
     if (visits.length === 1) return;
-    const remaining = visits.filter((v) => v.id !== id);
-    setVisits(remaining);
-    if (activeId === id) setActiveId(remaining[remaining.length - 1].id);
+    setVisits((vs) => {
+      const next = vs.filter((v) => v.id !== id);
+      setArchived((a) => { triggerSave(next, a); return a; });
+      return next;
+    });
+    if (activeId === id) setActiveId(visits.find((v) => v.id !== id)?.id);
   };
 
-  // Stats
-  const allItems = DEFAULT_CHECKPOINTS.flatMap((c) => c.items);
-  const total = allItems.length;
-  const counts = { pass: 0, fail: 0, flag: 0, na: 0 };
-  allItems.forEach((i) => { const s = visit.checkResults[i.id]?.status; if (s) counts[s]++; });
-  const checked = counts.pass + counts.fail + counts.flag + counts.na;
-  const progress = Math.round((checked / total) * 100);
+  const handleArchive = (id) => {
+    const toArchive = visits.find((v) => v.id === id);
+    if (!toArchive) return;
+    const archivedVisit = { ...toArchive, archivedAt: new Date().toISOString() };
+    const remaining = visits.filter((v) => v.id !== id);
+    const newVisits = remaining.length > 0 ? remaining : [makeVisit()];
+    const newArchived = [archivedVisit, ...archived];
+    setVisits(newVisits);
+    setArchived(newArchived);
+    setActiveId(newVisits[0].id);
+    setTab("overview");
+    triggerSave(newVisits, newArchived);
+  };
+
+  const handleReopen = (id) => {
+    const toReopen = archived.find((a) => a.id === id);
+    if (!toReopen) return;
+    const { archivedAt, ...visitData } = toReopen;
+    const reopened = { ...visitData, id: Date.now() };
+    const newVisits = [...visits, reopened];
+    const newArchived = archived.filter((a) => a.id !== id);
+    setVisits(newVisits);
+    setArchived(newArchived);
+    setActiveId(reopened.id);
+    setTab("overview");
+    triggerSave(newVisits, newArchived);
+  };
+
+  const handleDeleteArchived = (id) => {
+    setArchived((a) => {
+      const next = a.filter((v) => v.id !== id);
+      setVisits((vs) => { triggerSave(vs, next); return vs; });
+      return next;
+    });
+  };
+
+  const { counts, checked, total, progress } = getVisitStats(visit);
+  const syncLabel = { saving:"⏳ Saving…", saved:"✓ Saved", error:"⚠ Save failed", loading:"⏳ Loading…" }[syncStatus] || "";
+  const syncColor = { saving:"#94a3b8", saved:"#16a34a", error:"#dc2626", loading:"#94a3b8" }[syncStatus] || "#94a3b8";
 
   const TABS = [
-    { id: "overview", label: "Overview" },
-    { id: "checkpoints", label: `Checkpoints (${checked}/${total})` },
-    { id: "observations", label: `Observations (${visit.observations.length})` },
-    { id: "export", label: "Export" },
+    { id:"overview", label:"Overview" },
+    { id:"checkpoints", label:`Checkpoints (${checked}/${total})` },
+    { id:"observations", label:`Observations (${(visit.observations||[]).length})` },
+    { id:"export", label:"Export" },
+    { id:"history", label:`History (${archived.length})` },
   ];
 
   return (
-    <div style={{ fontFamily: "'Inter','Segoe UI',system-ui,sans-serif", background: "#f8fafc", minHeight: "100vh", color: "#111827" }}>
-      {/* Header */}
-      <div style={{ background: "#0f172a", color: "#fff", padding: "14px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+    <div style={{ fontFamily:"'Inter','Segoe UI',system-ui,sans-serif", background:"#f8fafc", minHeight:"100vh", color:"#111827" }}>
+      <div style={{ background:"#0f172a", color:"#fff", padding:"14px 24px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
         <div>
-          <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.02em" }}>🏗 Site Visit Inspector</div>
-          <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
+          <div style={{ fontSize:18, fontWeight:800, letterSpacing:"-0.02em" }}>🏗 Site Visit Inspector</div>
+          <div style={{ fontSize:12, color:"#94a3b8", marginTop:2 }}>
             {visit.siteName ? `${visit.siteName} — ${visit.date}` : "Fill in visit details to get started"}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          {syncLabel && <span style={{ fontSize:11, color:syncColor, fontWeight:600 }}>{syncLabel}</span>}
           {counts.fail > 0 && (
-            <span style={{ background: "#dc2626", color: "#fff", borderRadius: 999, padding: "4px 10px", fontSize: 12, fontWeight: 700 }}>
-              {counts.fail} FAIL{counts.fail !== 1 ? "S" : ""}
+            <span style={{ background:"#dc2626", color:"#fff", borderRadius:999, padding:"4px 10px", fontSize:12, fontWeight:700 }}>
+              {counts.fail} FAIL{counts.fail!==1?"S":""}
             </span>
           )}
-          <span style={{ background: progress === 100 ? "#16a34a" : "#334155", color: "#fff",
-            borderRadius: 999, padding: "4px 10px", fontSize: 12, fontWeight: 700 }}>
+          <span style={{ background:progress===100?"#16a34a":"#334155", color:"#fff",
+            borderRadius:999, padding:"4px 10px", fontSize:12, fontWeight:700 }}>
             {progress}% complete
           </span>
         </div>
       </div>
 
-      {/* Visit switcher */}
-      <VisitSwitcher visits={visits} activeId={activeId} onSelect={setActiveId} onNew={handleNewVisit} onDelete={handleDeleteVisit} />
+      <VisitSwitcher visits={visits} activeId={activeId} onSelect={(id) => { setActiveId(id); setTab("overview"); }}
+        onNew={handleNewVisit} onDelete={handleDeleteVisit} onArchive={handleArchive} />
 
-      {/* Nav */}
-      <div style={{ background: "#fff", borderBottom: "1px solid #e5e7eb", display: "flex", padding: "0 24px", gap: 0 }}>
+      <div style={{ background:"#fff", borderBottom:"1px solid #e5e7eb", display:"flex", padding:"0 24px", overflowX:"auto" }}>
         {TABS.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
-            padding: "12px 18px", fontSize: 13, fontWeight: 600, border: "none", background: "none",
-            cursor: "pointer", borderBottom: tab === t.id ? "2px solid #0ea5e9" : "2px solid transparent",
-            color: tab === t.id ? "#0ea5e9" : "#6b7280",
-          }}>{t.label}</button>
+          <button key={t.id} onClick={() => setTab(t.id)} style={{ padding:"12px 18px", fontSize:13, fontWeight:600,
+            border:"none", background:"none", cursor:"pointer", whiteSpace:"nowrap",
+            borderBottom: tab===t.id?"2px solid #0ea5e9":"2px solid transparent",
+            color: tab===t.id?"#0ea5e9":"#6b7280" }}>{t.label}</button>
         ))}
       </div>
 
-      {/* Body */}
-      <div style={{ padding: "24px", maxWidth: 900, margin: "0 auto" }}>
-        {tab === "overview" && (
-          <OverviewTab visit={visit} onUpdateVisit={handleUpdateField}
-            counts={counts} checked={checked} total={total} progress={progress} />
-        )}
-        {tab === "checkpoints" && (
-          <CheckpointsTab key={activeId} visit={visit} onSetResult={handleSetResult} onSetNote={handleSetNote} />
-        )}
-        {tab === "observations" && (
-          <ObservationsTab key={activeId} visit={visit} onAddObs={handleAddObs} onRemoveObs={handleRemoveObs} />
-        )}
-        {tab === "export" && (
-          <ExportTab visit={visit} counts={counts} checked={checked} total={total} />
+      <div style={{ padding:"24px", maxWidth:900, margin:"0 auto" }}>
+        {syncStatus === "loading" ? (
+          <div style={{ textAlign:"center", padding:"60px 0", color:"#6b7280", fontSize:14 }}>⏳ Loading your visits…</div>
+        ) : (
+          <>
+            {tab==="overview" && <OverviewTab visit={visit} onUpdateVisit={handleUpdateField} counts={counts} checked={checked} total={total} progress={progress} />}
+            {tab==="checkpoints" && <CheckpointsTab key={activeId} visit={visit} onSetResult={handleSetResult} onSetNote={handleSetNote} />}
+            {tab==="observations" && <ObservationsTab key={activeId} visit={visit} onAddObs={handleAddObs} onRemoveObs={handleRemoveObs} />}
+            {tab==="export" && <ExportTab visit={visit} counts={counts} checked={checked} total={total} />}
+            {tab==="history" && <HistoryTab archived={archived} onReopen={handleReopen} onDeleteArchived={handleDeleteArchived} />}
+          </>
         )}
       </div>
     </div>
