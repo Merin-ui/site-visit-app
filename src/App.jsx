@@ -661,7 +661,14 @@ export default function App() {
   const [activeId, setActiveId] = useState(visits[0].id);
   const [tab, setTab] = useState("overview");
   const [syncStatus, setSyncStatus] = useState("loading");
+  const [isLoaded, setIsLoaded] = useState(false);
+
   const saveTimer = useRef(null);
+  // Refs so triggerSave always reads latest state without stale closure
+  const visitsRef = useRef(visits);
+  const archivedRef = useRef(archived);
+  useEffect(() => { visitsRef.current = visits; }, [visits]);
+  useEffect(() => { archivedRef.current = archived; }, [archived]);
 
   useEffect(() => {
     loadFromBin()
@@ -671,27 +678,33 @@ export default function App() {
         setVisits(v);
         setArchived(a);
         setActiveId(v[0].id);
+        setIsLoaded(true);
         setSyncStatus("idle");
       })
-      .catch(() => setSyncStatus("error"));
+      .catch(() => { setIsLoaded(true); setSyncStatus("error"); });
   }, []);
 
   const triggerSave = useCallback((newVisits, newArchived) => {
+    if (!isLoaded) return; // never save before load finishes
+    const v = newVisits ?? visitsRef.current;
+    const a = newArchived ?? archivedRef.current;
     setSyncStatus("saving");
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      saveToBin({ visits: newVisits, archived: newArchived })
+      saveToBin({ visits: v, archived: a })
         .then(() => setSyncStatus("saved"))
         .catch(() => setSyncStatus("error"));
     }, 1200);
-  }, []);
+  }, [isLoaded]);
 
   const visit = visits.find((v) => v.id === activeId) || visits[0];
 
   const updateVisit = useCallback((updater) => {
     setVisits((vs) => {
-      const next = vs.map((v) => v.id === activeId ? (typeof updater === "function" ? updater(v) : { ...v, ...updater }) : v);
-      setArchived((a) => { triggerSave(next, a); return a; });
+      const next = vs.map((v) => v.id === activeId
+        ? (typeof updater === "function" ? updater(v) : { ...v, ...updater })
+        : v);
+      triggerSave(next, archivedRef.current);
       return next;
     });
   }, [activeId, triggerSave]);
@@ -704,7 +717,11 @@ export default function App() {
 
   const handleNewVisit = () => {
     const nv = makeVisit();
-    setVisits((vs) => { const next = [...vs, nv]; setArchived((a) => { triggerSave(next, a); return a; }); return next; });
+    setVisits((vs) => {
+      const next = [...vs, nv];
+      triggerSave(next, archivedRef.current);
+      return next;
+    });
     setActiveId(nv.id);
     setTab("overview");
   };
@@ -713,19 +730,19 @@ export default function App() {
     if (visits.length === 1) return;
     setVisits((vs) => {
       const next = vs.filter((v) => v.id !== id);
-      setArchived((a) => { triggerSave(next, a); return a; });
+      triggerSave(next, archivedRef.current);
       return next;
     });
     if (activeId === id) setActiveId(visits.find((v) => v.id !== id)?.id);
   };
 
   const handleArchive = (id) => {
-    const toArchive = visits.find((v) => v.id === id);
+    const toArchive = visitsRef.current.find((v) => v.id === id);
     if (!toArchive) return;
     const archivedVisit = { ...toArchive, archivedAt: new Date().toISOString() };
-    const remaining = visits.filter((v) => v.id !== id);
+    const remaining = visitsRef.current.filter((v) => v.id !== id);
     const newVisits = remaining.length > 0 ? remaining : [makeVisit()];
-    const newArchived = [archivedVisit, ...archived];
+    const newArchived = [archivedVisit, ...archivedRef.current];
     setVisits(newVisits);
     setArchived(newArchived);
     setActiveId(newVisits[0].id);
@@ -734,12 +751,12 @@ export default function App() {
   };
 
   const handleReopen = (id) => {
-    const toReopen = archived.find((a) => a.id === id);
+    const toReopen = archivedRef.current.find((a) => a.id === id);
     if (!toReopen) return;
     const { archivedAt, ...visitData } = toReopen;
     const reopened = { ...visitData, id: Date.now() };
-    const newVisits = [...visits, reopened];
-    const newArchived = archived.filter((a) => a.id !== id);
+    const newVisits = [...visitsRef.current, reopened];
+    const newArchived = archivedRef.current.filter((a) => a.id !== id);
     setVisits(newVisits);
     setArchived(newArchived);
     setActiveId(reopened.id);
@@ -748,11 +765,9 @@ export default function App() {
   };
 
   const handleDeleteArchived = (id) => {
-    setArchived((a) => {
-      const next = a.filter((v) => v.id !== id);
-      setVisits((vs) => { triggerSave(vs, next); return vs; });
-      return next;
-    });
+    const next = archivedRef.current.filter((v) => v.id !== id);
+    setArchived(next);
+    triggerSave(visitsRef.current, next);
   };
 
   const { counts, checked, total, progress } = getVisitStats(visit);
