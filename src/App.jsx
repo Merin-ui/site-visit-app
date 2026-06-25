@@ -1,13 +1,55 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, Component } from "react";
+
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(e) { return { error: e }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ fontFamily: "sans-serif", padding: 40, maxWidth: 600, margin: "60px auto", textAlign: "center" }}>
+          <div style={{ fontSize: 32, marginBottom: 16 }}>⚠️</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#111827", marginBottom: 8 }}>Something went wrong</div>
+          <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 24 }}>
+            The app hit an unexpected error. Your data is safe in JSONBin.
+          </div>
+          <button onClick={() => window.location.reload()}
+            style={{ background: "#0f172a", color: "#fff", border: "none", borderRadius: 8,
+              padding: "10px 24px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+            Reload App
+          </button>
+          <details style={{ marginTop: 24, textAlign: "left", fontSize: 11, color: "#9ca3af" }}>
+            <summary style={{ cursor: "pointer" }}>Error details</summary>
+            <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{this.state.error?.message}</pre>
+          </details>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const BIN_ID = "6a3b85fcf5f4af5e2927780e";
 const API_KEY = "$2a$10$pktgtUci53s8FHLnqQrrxuBETuQr6u6.dOGEL1oeVvbGBl4hIjnf6";
 const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
 
 async function loadFromBin() {
-  const res = await fetch(BIN_URL, { headers: { "X-Master-Key": API_KEY } });
-  const data = await res.json();
-  return data.record || { visits: [], archived: [] };
+  try {
+    const res = await fetch(BIN_URL, { headers: { "X-Master-Key": API_KEY } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const record = data.record || {};
+    // Sanitize — make sure visits is always a valid array of objects
+    const visits = Array.isArray(record.visits)
+      ? record.visits.filter((v) => v && typeof v === "object")
+      : [];
+    const archived = Array.isArray(record.archived)
+      ? record.archived.filter((v) => v && typeof v === "object")
+      : [];
+    return { visits, archived };
+  } catch (e) {
+    console.error("JSONBin load error:", e);
+    return { visits: [], archived: [] };
+  }
 }
 
 async function saveToBin(payload) {
@@ -431,6 +473,10 @@ function ExportTab({ visit, counts, checked, total }) {
 function HistoryTab({ archived, onReopen, onDeleteArchived, onExportArchived }) {
   const S = useStyles();
   const [selected, setSelected] = useState(null);
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   if (archived.length === 0) {
     return (
@@ -571,11 +617,6 @@ function HistoryTab({ archived, onReopen, onDeleteArchived, onExportArchived }) 
   }
 
   // List view
-  const [search, setSearch] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-
   const filtered = [...archived]
     .sort((a, b) => new Date(b.archivedAt) - new Date(a.archivedAt))
     .filter((v) => {
@@ -729,6 +770,7 @@ function VisitSwitcher({ visits, activeId, onSelect, onNew, onDelete, onArchive 
 
 // ── Main App ───────────────────────────────────────────────────────────────
 
+export { ErrorBoundary };
 export default function App() {
   const [visits, setVisits] = useState([makeVisit()]);
   const [archived, setArchived] = useState([]);
@@ -746,16 +788,21 @@ export default function App() {
 
   useEffect(() => {
     loadFromBin()
-      .then((record) => {
-        const v = record.visits?.length ? record.visits : [makeVisit()];
-        const a = record.archived || [];
+      .then(({ visits: savedVisits, archived: savedArchived }) => {
+        const v = savedVisits.length ? savedVisits : [makeVisit()];
+        const a = savedArchived || [];
         setVisits(v);
         setArchived(a);
         setActiveId(v[0].id);
         setIsLoaded(true);
         setSyncStatus("idle");
       })
-      .catch(() => { setIsLoaded(true); setSyncStatus("error"); });
+      .catch(() => {
+        // Even on total failure, give the user a blank working visit
+        setVisits([makeVisit()]);
+        setIsLoaded(true);
+        setSyncStatus("error");
+      });
   }, []);
 
   const triggerSave = useCallback((newVisits, newArchived) => {
